@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RSL to Text</title>
+  <meta name="description" content="Russian Sign Language recognition in the browser, using the Slovo MViTv2 model.">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo" aria-hidden="true">🤟</span>
+      <div>
+        <h1>RSL → Text</h1>
+        <p class="sub">Russian Sign Language recognition, running in your browser</p>
+      </div>
+    </div>
+    <div id="status" class="status" data-state="idle">Model not loaded</div>
+  </header>
+
+  <main class="layout">
+    <section class="panel stage">
+      <div class="video-wrap" id="videoWrap">
+        <video id="video" playsinline muted></video>
+        <div class="placeholder" id="placeholder">
+          <p>Load the model, then start the camera or play the sample video.</p>
+        </div>
+        <div class="overlay" id="overlay" hidden>
+          <span id="overlayWord">…</span>
+          <span id="overlayProb"></span>
+        </div>
+        <div class="buffer-bar" title="Frames collected for the next prediction"><div id="bufferFill"></div></div>
+      </div>
+
+      <div class="controls">
+        <button id="btnCamera" class="primary" disabled>Start camera</button>
+        <button id="btnSample" disabled>Sample video</button>
+        <label class="button" id="lblFile" aria-disabled="true">
+          Video file…
+          <input type="file" id="fileVideo" accept="video/*" hidden disabled>
+        </label>
+        <button id="btnStop" disabled>Stop</button>
+      </div>
+
+      <details class="settings" open>
+        <summary>Model &amp; settings</summary>
+        <div class="grid">
+          <label>Model
+            <select id="selModel">
+              <option value="mvit16-4">MViTv2-S 16 frames (faster, 58% top-1)</option>
+              <option value="mvit32-2">MViTv2-S 32 frames (more accurate, 64% top-1)</option>
+            </select>
+          </label>
+          <label><span>Confidence threshold <output id="outThreshold">0.50</output></span>
+            <input type="range" id="rngThreshold" min="0.05" max="0.95" step="0.05" value="0.5">
+          </label>
+          <label><span>Predict every <output id="outStride">50%</output> of the window</span>
+            <input type="range" id="rngStride" min="0.25" max="1" step="0.25" value="0.5">
+          </label>
+          <label class="check"><input type="checkbox" id="chkMirror" checked> Mirror preview</label>
+          <label class="check"><input type="checkbox" id="chkSpeak"> Speak new words (ru-RU)</label>
+        </div>
+        <div class="load-row">
+          <button id="btnLoad" class="primary">Load model</button>
+          <label class="button subtle">
+            Load .onnx from disk…
+            <input type="file" id="fileModel" accept=".onnx" hidden>
+          </label>
+        </div>
+        <div class="progress" id="progress" hidden><div id="progressFill"></div><span id="progressText"></span></div>
+      </details>
+    </section>
+
+    <section class="panel results">
+      <h2>Transcript</h2>
+      <div id="transcript" class="transcript" aria-live="polite"><span class="muted">Recognized signs appear here.</span></div>
+      <div class="controls">
+        <button id="btnSpeakAll">Speak</button>
+        <button id="btnCopy">Copy</button>
+        <button id="btnClear">Clear</button>
+      </div>
+
+      <h2>Live prediction</h2>
+      <ol id="topk" class="topk"></ol>
+
+      <dl class="stats">
+        <div><dt>Backend</dt><dd id="statBackend">–</dd></div>
+        <div><dt>Inference</dt><dd id="statInfer">–</dd></div>
+        <div><dt>Window</dt><dd id="statWindow">–</dd></div>
+        <div><dt>Predictions</dt><dd id="statCount">0</dd></div>
+      </dl>
+
+      <div class="tips">
+        <h2>Tips</h2>
+        <ul>
+          <li>Stand so your upper body and both hands are in the frame, like the signers in the Slovo videos.</li>
+          <li>Sign one word at a time and pause briefly between words. The model recognizes isolated signs, not continuous sentences.</li>
+          <li>Even, bright lighting and a plain background help.</li>
+          <li>"—" means the model sees no sign.</li>
+        </ul>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    Model and sample video: <a href="https://github.com/ai-forever/slovo" target="_blank" rel="noopener">Slovo</a> by ai-forever (SberDevices),
+    licensed CC BY-SA 4.0 (variant). Inference with <a href="https://onnxruntime.ai" target="_blank" rel="noopener">ONNX Runtime Web</a>.
+    Video never leaves your device.
+  </footer>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>

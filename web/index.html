@@ -52,11 +52,18 @@
               <option value="mvit32-2">MViTv2-S 32 frames (more accurate, 64% top-1)</option>
             </select>
           </label>
+          <label>Run on
+            <select id="selBackend">
+              <option value="auto">Auto: GPU if available, else CPU</option>
+              <option value="webgpu">GPU (WebGPU)</option>
+              <option value="wasm">CPU (WASM)</option>
+            </select>
+          </label>
           <label><span>Confidence threshold <output id="outThreshold">0.50</output></span>
             <input type="range" id="rngThreshold" min="0.05" max="0.95" step="0.05" value="0.5">
           </label>
-          <label><span>Predict every <output id="outStride">50%</output> of the window</span>
-            <input type="range" id="rngStride" min="0.25" max="1" step="0.25" value="0.5">
+          <label><span>Predict every <output id="outStride">25%</output> of the window</span>
+            <input type="range" id="rngStride" min="0.25" max="1" step="0.25" value="0.25">
           </label>
           <label class="check"><input type="checkbox" id="chkMirror" checked> Mirror preview</label>
           <label class="check"><input type="checkbox" id="chkSpeak"> Speak new words (ru-RU)</label>

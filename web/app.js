@@ -3,9 +3,23 @@ import { CLASSES, NO_SIGN } from './classes.js';
 // Pre-trained Slovo models (github.com/ai-forever/slovo). "frames" is the window
 // length the model expects; "interval" is how many 30 fps camera frames apart
 // the window's frames are sampled, matching how each model was trained.
+// The "-webgpu" files are the same models rewritten by tools/convert_webgpu.py
+// so the GPU backend can run them; the originals are a bit faster on the CPU.
 const MODELS = {
-  'mvit16-4': { frames: 16, interval: 4, url: 'models/mvit16-4.onnx', size: 140510654 },
-  'mvit32-2': { frames: 32, interval: 2, url: 'models/mvit32-2.onnx', size: 140785735 },
+  'mvit16-4': {
+    frames: 16, interval: 4,
+    files: {
+      webgpu: { url: 'models/mvit16-4-webgpu.onnx', size: 141089348 },
+      wasm: { url: 'models/mvit16-4.onnx', size: 140510654 },
+    },
+  },
+  'mvit32-2': {
+    frames: 32, interval: 2,
+    files: {
+      webgpu: { url: 'models/mvit32-2-webgpu.onnx', size: 141364504 },
+      wasm: { url: 'models/mvit32-2.onnx', size: 140785735 },
+    },
+  },
 };
 const SOURCE_FPS = 30;
 const SIZE = 224;
@@ -20,7 +34,7 @@ const els = {
   status: $('status'), video: $('video'), videoWrap: $('videoWrap'), placeholder: $('placeholder'),
   overlay: $('overlay'), overlayWord: $('overlayWord'), overlayProb: $('overlayProb'), bufferFill: $('bufferFill'),
   btnCamera: $('btnCamera'), btnSample: $('btnSample'), lblFile: $('lblFile'), fileVideo: $('fileVideo'), btnStop: $('btnStop'),
-  selModel: $('selModel'), rngThreshold: $('rngThreshold'), outThreshold: $('outThreshold'),
+  selModel: $('selModel'), selBackend: $('selBackend'), rngThreshold: $('rngThreshold'), outThreshold: $('outThreshold'),
   rngStride: $('rngStride'), outStride: $('outStride'), chkMirror: $('chkMirror'), chkSpeak: $('chkSpeak'),
   btnLoad: $('btnLoad'), fileModel: $('fileModel'), progress: $('progress'), progressFill: $('progressFill'), progressText: $('progressText'),
   transcript: $('transcript'), btnSpeakAll: $('btnSpeakAll'), btnCopy: $('btnCopy'), btnClear: $('btnClear'),
@@ -44,11 +58,12 @@ const state = {
 };
 
 // ---------- settings persistence (per-viewer convenience only) ----------
-const SETTINGS_KEY = 'rsl-settings';
+const SETTINGS_KEY = 'rsl-settings-v2';
 function loadSettings() {
   try {
     const s = JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}');
     if (s.model && MODELS[s.model]) els.selModel.value = s.model;
+    if (['auto', 'webgpu', 'wasm'].includes(s.backend)) els.selBackend.value = s.backend;
     if (s.threshold) els.rngThreshold.value = s.threshold;
     if (s.stride) els.rngStride.value = s.stride;
     if (typeof s.mirror === 'boolean') els.chkMirror.checked = s.mirror;
@@ -58,7 +73,7 @@ function loadSettings() {
 function saveSettings() {
   try {
     localStorage.setItem(SETTINGS_KEY, JSON.stringify({
-      model: els.selModel.value, threshold: els.rngThreshold.value,
+      model: els.selModel.value, backend: els.selBackend.value, threshold: els.rngThreshold.value,
       stride: els.rngStride.value, mirror: els.chkMirror.checked, speak: els.chkSpeak.checked,
     }));
   } catch { /* storage unavailable */ }
@@ -84,23 +99,39 @@ async function ensureCrossOriginIsolation() {
 }
 
 // ---------- worker ----------
-const worker = new Worker('worker.js');
+// ONNX Runtime runs in a Web Worker. The GPU and CPU builds of ONNX Runtime
+// can't share one, so each model load starts a fresh worker for its backend.
+let worker = null;
 const pending = new Map();
 let msgId = 0;
-worker.onmessage = (e) => {
-  const msg = e.data;
-  const key = msg.type === 'loaded' || (msg.type === 'error' && msg.stage === 'load') ? 'load' : msg.id;
-  const p = pending.get(key);
-  if (!p) return;
-  pending.delete(key);
-  if (msg.type === 'error') p.reject(new Error(msg.message));
-  else p.resolve(msg);
-};
-worker.onerror = (e) => setStatus('error', `Worker failed: ${e.message || 'could not start ONNX Runtime'}`);
+
+function rejectPending(err) {
+  for (const p of pending.values()) p.reject(err);
+  pending.clear();
+}
+
+function startWorker(backend) {
+  if (worker) worker.terminate();
+  rejectPending(new Error('Worker restarted'));
+  worker = new Worker(`worker.js?backend=${backend}`);
+  worker.onmessage = (e) => {
+    const msg = e.data;
+    const p = pending.get(msg.id);
+    if (!p) return;
+    pending.delete(msg.id);
+    if (msg.type === 'error') p.reject(new Error(msg.message));
+    else p.resolve(msg);
+  };
+  worker.onerror = (e) => {
+    e.preventDefault();
+    rejectPending(new Error(e.message || 'Could not start ONNX Runtime'));
+  };
+}
+
 function callWorker(msg, transfer = []) {
-  const key = msg.type === 'load' ? 'load' : (msg.id = ++msgId);
+  msg.id = ++msgId;
   return new Promise((resolve, reject) => {
-    pending.set(key, { resolve, reject });
+    pending.set(msg.id, { resolve, reject });
     worker.postMessage(msg, transfer);
   });
 }
@@ -139,7 +170,7 @@ async function fetchWithProgress(url, expectedSize, label) {
   const res = await fetch(url);
   if (!res.ok) {
     throw new Error(res.status === 404
-      ? `Model file ${url} not found on this server. Run "python serve.py" (it downloads the model), or use "Load .onnx from disk".`
+      ? `${url} not found on this server (run "python serve.py" to download it)`
       : `Could not download ${url} (HTTP ${res.status})`);
   }
   const total = Number(res.headers.get('content-length')) || expectedSize;
@@ -163,58 +194,107 @@ async function fetchWithProgress(url, expectedSize, label) {
   return buffer.buffer;
 }
 
-async function loadModel(buffer, name, fallback) {
+async function gpuAvailable() {
+  try {
+    return Boolean(navigator.gpu && await navigator.gpu.requestAdapter());
+  } catch {
+    return false;
+  }
+}
+
+// Backends to try, in order. "Auto" prefers the GPU and falls back to the CPU.
+async function backendOrder() {
+  const choice = els.selBackend.value;
+  if (choice !== 'auto') return [choice];
+  return (await gpuAvailable()) ? ['webgpu', 'wasm'] : ['wasm'];
+}
+
+const BACKEND_NAMES = { webgpu: 'GPU', wasm: 'CPU' };
+
+function beginLoading() {
   stopSource();
   setSourceButtons(false);
   els.btnLoad.disabled = true;
-  setStatus('loading', `Starting ${name}…`);
-  setProgress(1, 'Initializing ONNX Runtime (first run downloads ~14 MB of WASM)…');
+  state.model = null;
+  state.loadedKey = null;
+}
+
+// Starts an inference session for `buffer` on `backend`; throws if it can't run.
+async function startSession(buffer, backend, name, cfg) {
+  setStatus('loading', `Starting ${name} on ${BACKEND_NAMES[backend]}…`);
+  setProgress(1, backend === 'webgpu'
+    ? 'Preparing the GPU (first run downloads ~26 MB of ONNX Runtime and compiles shaders)…'
+    : 'Initializing ONNX Runtime (first run downloads ~14 MB of WASM)…');
+  startWorker(backend);
   const threads = self.crossOriginIsolated ? Math.min(navigator.hardwareConcurrency || 4, 8) : 1;
-  try {
-    const res = await callWorker({ type: 'load', buffer, threads }, [buffer]);
-    const frames = res.frames || fallback.frames;
-    state.model = { name, frames, interval: fallback.interval };
-    els.statBackend.textContent = `WASM (CPU, ${res.threads} thread${res.threads === 1 ? '' : 's'})`;
-    els.statWindow.textContent = `${frames} frames, every ${fallback.interval}`;
-    setStatus('ready', `${name} ready`);
+  // Not transferred: the buffer is reused if this backend fails.
+  const res = await callWorker({ type: 'load', buffer, threads });
+  const frames = res.frames || cfg.frames;
+  state.model = { name, frames, interval: cfg.interval };
+  els.statBackend.textContent = backend === 'webgpu'
+    ? 'WebGPU (GPU)'
+    : `WASM (CPU, ${res.threads} thread${res.threads === 1 ? '' : 's'})${res.threads === 1 ? ' · slow: no cross-origin isolation' : ''}`;
+  els.statWindow.textContent = `${frames} frames, every ${cfg.interval}`;
+  els.statInfer.textContent = res.warmupMs ? `${Math.round(res.warmupMs)} ms (warm-up)` : '–';
+}
+
+function finishLoading(name, backend, failures) {
+  setStatus('ready', `${name} ready on ${BACKEND_NAMES[backend]}`);
+  if (failures.length) {
+    setProgress(1, `Using the CPU because the GPU failed: ${failures.join('; ')}`);
+  } else {
     setProgress(null);
-    setSourceButtons(true);
-    els.placeholder.querySelector('p').textContent = 'Model ready. Start the camera or play the sample video.';
-    if (res.threads === 1) {
-      els.statBackend.textContent += ' · slow: no cross-origin isolation';
-    }
-  } catch (err) {
-    state.model = null;
-    state.loadedKey = null;
-    setStatus('error', 'Model failed to load');
-    setProgress(1, String(err.message || err));
-  } finally {
-    els.btnLoad.disabled = false;
   }
+  setSourceButtons(true);
+  els.btnLoad.disabled = false;
+  els.placeholder.querySelector('p').textContent = 'Model ready. Start the camera or play the sample video.';
+}
+
+function failLoading(failures) {
+  setStatus('error', 'Model failed to load');
+  setProgress(1, failures.join('; '));
+  els.btnLoad.disabled = false;
 }
 
 async function loadSelectedModel() {
   const key = els.selModel.value;
   const cfg = MODELS[key];
-  try {
-    setStatus('loading', `Downloading ${key}…`);
-    const buffer = await fetchWithProgress(cfg.url, cfg.size, key);
-    state.loadedKey = key;
-    await loadModel(buffer, key, cfg);
-  } catch (err) {
-    setStatus('error', 'Model download failed');
-    setProgress(1, String(err.message || err));
-    els.btnLoad.disabled = false;
+  beginLoading();
+  const failures = [];
+  for (const backend of await backendOrder()) {
+    try {
+      setStatus('loading', `Downloading ${key}…`);
+      const file = cfg.files[backend];
+      const buffer = await fetchWithProgress(file.url, file.size, key);
+      await startSession(buffer, backend, key, cfg);
+      state.loadedKey = key;
+      finishLoading(key, backend, failures);
+      return;
+    } catch (err) {
+      failures.push(`${BACKEND_NAMES[backend]}: ${err.message || err}`);
+    }
   }
+  failLoading(failures);
 }
 
 async function loadModelFromDisk(file) {
   const m = /(\d+)-(\d+)/.exec(file.name);
-  const fallback = m ? { frames: Number(m[1]), interval: Number(m[2]) } : { frames: 32, interval: 2 };
+  const cfg = m ? { frames: Number(m[1]), interval: Number(m[2]) } : { frames: 32, interval: 2 };
+  const name = file.name.replace(/\.onnx$/i, '');
+  beginLoading();
   setStatus('loading', `Reading ${file.name}…`);
   const buffer = await file.arrayBuffer();
-  state.loadedKey = null;
-  await loadModel(buffer, file.name.replace(/\.onnx$/i, ''), fallback);
+  const failures = [];
+  for (const backend of await backendOrder()) {
+    try {
+      await startSession(buffer, backend, name, cfg);
+      finishLoading(name, backend, failures);
+      return;
+    } catch (err) {
+      failures.push(`${BACKEND_NAMES[backend]}: ${err.message || err}`);
+    }
+  }
+  failLoading(failures);
 }
 
 // ---------- video sources ----------
@@ -496,6 +576,10 @@ els.selModel.addEventListener('change', () => {
   if (state.loadedKey && state.loadedKey !== els.selModel.value) {
     setStatus('idle', `Press "Load model" to switch to ${els.selModel.value}`);
   }
+});
+els.selBackend.addEventListener('change', () => {
+  saveSettings();
+  if (state.model) setStatus('idle', 'Press "Load model" to switch backend');
 });
 els.rngThreshold.addEventListener('input', () => { updateOutputs(); saveSettings(); });
 els.rngStride.addEventListener('input', () => { updateOutputs(); saveSettings(); });

@@ -3,13 +3,15 @@
 
 Downloads the Slovo ONNX models (once) into web/models/ and serves web/ on
 http://localhost:8000 with the headers multi-threaded ONNX Runtime Web needs.
+If the `onnx` package is installed (pip install onnx), it also creates the
+GPU versions of the models; without it the app runs on the CPU only.
 
 Usage:
     python serve.py                  # download both models, serve on port 8000
     python serve.py --models mvit16-4 --port 8080
     python serve.py --no-open        # don't open a browser tab
 
-Standard library only, no pip install needed.
+Standard library only, no pip install needed (onnx is optional, for the GPU).
 """
 
 import argparse
@@ -60,6 +62,22 @@ def download(name: str, size: int) -> None:
     print(f"[ok] {name} saved to {target.relative_to(ROOT)}")
 
 
+def make_gpu_model(name: str) -> None:
+    """Create the WebGPU-compatible copy of a model (needs the onnx package)."""
+    src = MODELS_DIR / f"{name}.onnx"
+    dst = MODELS_DIR / f"{name}-webgpu.onnx"
+    if dst.exists() and dst.stat().st_mtime >= src.stat().st_mtime:
+        print(f"[ok] {name}-webgpu already converted")
+        return
+    try:
+        sys.path.insert(0, str(ROOT / "tools"))
+        from convert_webgpu import convert
+    except ImportError:
+        print(f"[--] skipping GPU model for {name}: run 'pip install onnx' to enable the GPU")
+        return
+    convert(str(src), str(dst))
+
+
 class Handler(http.server.SimpleHTTPRequestHandler):
     extensions_map = {
         **http.server.SimpleHTTPRequestHandler.extensions_map,
@@ -96,6 +114,7 @@ def main() -> None:
             if name not in MODELS:
                 parser.error(f"unknown model {name!r}, choose from {', '.join(MODELS)}")
             download(name, MODELS[name])
+            make_gpu_model(name)
 
     handler = functools.partial(Handler, directory=str(WEB_DIR))
     server = http.server.ThreadingHTTPServer((args.host, args.port), handler)

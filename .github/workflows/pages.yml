@@ -3,7 +3,7 @@ name: Deploy web app to GitHub Pages
 on:
   push:
     branches: [main, master, claude/vigilant-hamilton-kwg77b]
-    paths: ['web/**', '.github/workflows/pages.yml']
+    paths: ['web/**', 'tools/**', '.github/workflows/pages.yml']
   workflow_dispatch:
 
 permissions:
@@ -32,6 +32,13 @@ jobs:
           base=https://rndml-team-cv.obs.ru-moscow-1.hc.sbercloud.ru/datasets/slovo/models/mvit/onnx
           for m in mvit16-4 mvit32-2; do
             curl -fsSL --retry 4 -o "web/models/$m.onnx" "$base/$m.onnx"
+          done
+
+      - name: Create GPU (WebGPU) versions of the models
+        run: |
+          pip install onnx numpy
+          for m in mvit16-4 mvit32-2; do
+            python tools/convert_webgpu.py "web/models/$m.onnx" "web/models/$m-webgpu.onnx"
           done
           ls -la web/models
 

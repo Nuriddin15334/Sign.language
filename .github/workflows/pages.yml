@@ -31,7 +31,7 @@ jobs:
           mkdir -p web/models
           base=https://rndml-team-cv.obs.ru-moscow-1.hc.sbercloud.ru/datasets/slovo/models/mvit/onnx
           for m in mvit16-4 mvit32-2; do
-            curl -fsSL --retry 4 -o "web/models/$m.onnx" "$base/$m.onnx"
+            curl -fsSL --retry 6 --retry-all-errors --retry-delay 10 -o "web/models/$m.onnx" "$base/$m.onnx"
           done
 
       - name: Create GPU (WebGPU) versions of the models
